@@ -12,6 +12,10 @@ public class AppDbContext : DbContext
     public DbSet<Student> Students => Set<Student>();
     public DbSet<Enrollment> Enrollments => Set<Enrollment>();
 
+    // Giá trị RowVersion cố định cho seed data (SQLite không tự sinh rowversion).
+    private static byte[] SeedRowVersion(int id) => new byte[] { 0, 0, 0, 0, 0, 0, 0, (byte)id };
+    private static readonly DateTime SeedCreatedAt = new(2026, 6, 1, 0, 0, 0, DateTimeKind.Local);
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -41,10 +45,26 @@ public class AppDbContext : DbContext
             .Property(c => c.TuitionFee)
             .HasColumnType("decimal(18,2)");
 
-        // Optimistic concurrency: UPDATE chỉ thành công khi Version chưa bị request khác đổi
+        // CourseCode là mã định danh nghiệp vụ duy nhất
+        modelBuilder.Entity<Course>()
+            .HasIndex(c => c.Code)
+            .IsUnique();
+
+        // Optimistic concurrency cho luồng Enroll: UPDATE chỉ thành công khi Version chưa đổi
         modelBuilder.Entity<Course>()
             .Property(c => c.Version)
             .IsConcurrencyToken();
+
+        // RowVersion: concurrency token cho Edit. ValueGeneratedNever vì SQLite không tự sinh —
+        // ApplyAuditAndSoftDelete() gán Guid mới mỗi lần Add/Update.
+        modelBuilder.Entity<Course>()
+            .Property(c => c.RowVersion)
+            .IsConcurrencyToken()
+            .ValueGeneratedNever();
+
+        // Global query filter: danh sách/chi tiết mặc định bỏ qua bản ghi đã xóa mềm
+        modelBuilder.Entity<Course>()
+            .HasQueryFilter(c => !c.IsDeleted);
 
         // --- Seed Data (migration: SeedInitialData) ---
         modelBuilder.Entity<CourseCategory>().HasData(
@@ -55,10 +75,10 @@ public class AppDbContext : DbContext
         );
 
         modelBuilder.Entity<Course>().HasData(
-            new Course { Id = 1, Code = "PRG-201", Name = "Lập Trình Hướng Đối Tượng C#", Instructor = "Cô Lê Thị Hoa", TuitionFee = 2500000, CurrentEnrollment = 29, MaxCapacity = 30, StartDate = new DateTime(2026, 9, 10), CourseCategoryId = 1 },
-            new Course { Id = 2, Code = "DATA-302", Name = "Nhập môn Khoa Học Dữ Liệu", Instructor = "Thầy Trần Đức Hùng", TuitionFee = 3500000, CurrentEnrollment = 9, MaxCapacity = 25, StartDate = new DateTime(2026, 9, 15), CourseCategoryId = 2 },
-            new Course { Id = 3, Code = "ENG-105", Name = "Tiếng Anh Giao Tiếp VSTEP B1", Instructor = "Ms. Emily Smith", TuitionFee = 1800000, CurrentEnrollment = 5, MaxCapacity = 20, StartDate = new DateTime(2026, 9, 20), CourseCategoryId = 3 },
-            new Course { Id = 4, Code = "DIG-101", Name = "Digital Marketing Cơ Bản", Instructor = "Cô Trần Thanh Mai", TuitionFee = 2000000, CurrentEnrollment = 8, MaxCapacity = 30, StartDate = new DateTime(2026, 10, 1), CourseCategoryId = 4 }
+            new Course { Id = 1, Code = "PRG-201", Name = "Lập Trình Hướng Đối Tượng C#", Instructor = "Cô Lê Thị Hoa", TuitionFee = 2500000, CurrentEnrollment = 29, MaxCapacity = 30, StartDate = new DateTime(2026, 9, 10), CourseCategoryId = 1, CreatedAt = SeedCreatedAt, RowVersion = SeedRowVersion(1) },
+            new Course { Id = 2, Code = "DATA-302", Name = "Nhập môn Khoa Học Dữ Liệu", Instructor = "Thầy Trần Đức Hùng", TuitionFee = 3500000, CurrentEnrollment = 9, MaxCapacity = 25, StartDate = new DateTime(2026, 9, 15), CourseCategoryId = 2, CreatedAt = SeedCreatedAt, RowVersion = SeedRowVersion(2) },
+            new Course { Id = 3, Code = "ENG-105", Name = "Tiếng Anh Giao Tiếp VSTEP B1", Instructor = "Ms. Emily Smith", TuitionFee = 1800000, CurrentEnrollment = 5, MaxCapacity = 20, StartDate = new DateTime(2026, 9, 20), CourseCategoryId = 3, CreatedAt = SeedCreatedAt, RowVersion = SeedRowVersion(3) },
+            new Course { Id = 4, Code = "DIG-101", Name = "Digital Marketing Cơ Bản", Instructor = "Cô Trần Thanh Mai", TuitionFee = 2000000, CurrentEnrollment = 8, MaxCapacity = 30, StartDate = new DateTime(2026, 10, 1), CourseCategoryId = 4, CreatedAt = SeedCreatedAt, RowVersion = SeedRowVersion(4) }
         );
 
         modelBuilder.Entity<Student>().HasData(
@@ -78,5 +98,49 @@ public class AppDbContext : DbContext
             new Student { Id = 14, FullName = "Lý Thị Kim Oanh",     Email = "oanh.ly@example.com",         PhoneNumber = "0934680257" },
             new Student { Id = 15, FullName = "Nguyễn Thành Long",   Email = "long.nguyen2@example.com",    PhoneNumber = "0945791368" }
         );
+    }
+
+    public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        ApplyAuditAndSoftDelete();
+        return base.SaveChangesAsync(cancellationToken);
+    }
+
+    public override int SaveChanges()
+    {
+        ApplyAuditAndSoftDelete();
+        return base.SaveChanges();
+    }
+
+    /// <summary>
+    /// Tự gán audit fields, chuyển xóa cứng thành xóa mềm và sinh RowVersion mới
+    /// trước khi EF gửi lệnh xuống database.
+    /// </summary>
+    private void ApplyAuditAndSoftDelete()
+    {
+        var now = DateTime.Now;
+
+        foreach (var entry in ChangeTracker.Entries())
+        {
+            // Chặn xóa cứng: chuyển Deleted -> Modified với IsDeleted = true
+            if (entry.State == EntityState.Deleted && entry.Entity is ISoftDeletable soft)
+            {
+                entry.State = EntityState.Modified;
+                soft.IsDeleted = true;
+                soft.DeletedAt = now;
+            }
+
+            if (entry.Entity is IAuditable audit)
+            {
+                if (entry.State == EntityState.Added)
+                    audit.CreatedAt = now;
+                else if (entry.State == EntityState.Modified)
+                    audit.UpdatedAt = now;
+            }
+
+            // SQLite không tự sinh rowversion: gán Guid mới cho mỗi Add/Update
+            if (entry.Entity is Course && entry.State is EntityState.Added or EntityState.Modified)
+                entry.Property(nameof(Course.RowVersion)).CurrentValue = Guid.NewGuid().ToByteArray();
+        }
     }
 }

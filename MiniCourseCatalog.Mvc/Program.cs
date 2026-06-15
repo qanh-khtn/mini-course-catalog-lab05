@@ -1,4 +1,6 @@
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using MiniCourseCatalog.Mvc.Data;
 using MiniCourseCatalog.Mvc.Filters;
 using MiniCourseCatalog.Mvc.Options;
@@ -6,12 +8,35 @@ using MiniCourseCatalog.Mvc.Repositories;
 using MiniCourseCatalog.Mvc.Repositories.Interfaces;
 using MiniCourseCatalog.Mvc.Services;
 using MiniCourseCatalog.Mvc.Services.Interfaces;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// --- Serilog: structured log ra Console + File (logs/lab05-yyyyMMdd.txt, giữ 7 ngày) ---
+builder.Host.UseSerilog((context, services, configuration) => configuration
+    .ReadFrom.Configuration(context.Configuration)
+    .ReadFrom.Services(services)
+    .Enrich.FromLogContext()
+    .WriteTo.Console()
+    .WriteTo.File(
+        path: "logs/lab05-.txt",
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 7,
+        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {Message:lj} {Properties:j}{NewLine}{Exception}"));
 
 builder.Services.AddControllersWithViews(options =>
 {
     options.Filters.Add(new ThemeFilter());
+});
+
+// ProblemDetails chuẩn hóa response lỗi API: tự thêm traceId + timestamp để dò log
+builder.Services.AddProblemDetails(options =>
+{
+    options.CustomizeProblemDetails = ctx =>
+    {
+        ctx.ProblemDetails.Extensions["traceId"] = ctx.HttpContext.TraceIdentifier;
+        ctx.ProblemDetails.Extensions["timestamp"] = DateTimeOffset.Now;
+    };
 });
 
 // Options Pattern — validate bằng Data Annotation ngay khi khởi động:
@@ -24,6 +49,11 @@ builder.Services.AddOptions<TrainingCenterConfig>()
 // EF Core + SQLite (Scoped by default)
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// Health Checks: liveness (process còn sống) + readiness (có kiểm tra database)
+builder.Services.AddHealthChecks()
+    .AddCheck("self", () => HealthCheckResult.Healthy("Ứng dụng đang chạy."), tags: new[] { "live" })
+    .AddDbContextCheck<AppDbContext>("database", tags: new[] { "ready" });
 
 // Repositories — Scoped
 builder.Services.AddScoped<ICourseRepository, CourseRepository>();
@@ -38,16 +68,66 @@ builder.Services.AddScoped<IStudentService, StudentService>();
 
 var app = builder.Build();
 
-if (!app.Environment.IsDevelopment())
+if (app.Environment.IsDevelopment())
 {
+    // Development: thấy stack trace chi tiết để debug
+    app.UseDeveloperExceptionPage();
+}
+else
+{
+    // Production: trang lỗi an toàn, KHÔNG lộ stack trace / connection string cho user
     app.UseExceptionHandler("/Home/Error");
     app.UseHsts();
 }
+
+app.UseSerilogRequestLogging();
 
 app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
 app.UseAuthorization();
+
+// Health Check endpoints
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("live")
+});
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
+
+// API mẫu: trả JSON khóa học theo id; không tìm thấy -> ProblemDetails 404 (có traceId)
+app.MapGet("/api/courses/{id:int}", async (int id, AppDbContext db) =>
+{
+    var course = await db.Courses
+        .AsNoTracking()
+        .Where(c => c.Id == id)
+        .Select(c => new
+        {
+            c.Id,
+            c.Code,
+            c.Name,
+            c.Instructor,
+            c.TuitionFee,
+            c.CurrentEnrollment,
+            c.MaxCapacity,
+            c.StartDate
+        })
+        .FirstOrDefaultAsync();
+
+    if (course is null)
+    {
+        return Results.Problem(
+            type: "https://minicourse.example/problems/course-not-found",
+            title: "Course not found",
+            detail: $"Không tìm thấy khóa học với id = {id}.",
+            statusCode: StatusCodes.Status404NotFound,
+            instance: $"/api/courses/{id}");
+    }
+
+    return Results.Ok(course);
+});
 
 app.MapControllerRoute(
     name: "default",

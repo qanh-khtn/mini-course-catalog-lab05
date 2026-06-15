@@ -63,4 +63,20 @@ public class FakeCourseRepository : ICourseRepository
 
         return Task.FromResult(query.OrderBy(c => c.TuitionFee).ToList());
     }
+
+    public Task<Course?> GetByIdIncludingDeletedAsync(int id) =>
+        Task.FromResult(_courses.FirstOrDefault(c => c.Id == id));
+
+    public Task<List<Course>> GetTrashReadOnlyAsync() =>
+        Task.FromResult(_courses.Where(c => c.IsDeleted).ToList());
+
+    public Task<bool> CodeExistsAsync(string code, int? excludeId = null) =>
+        Task.FromResult(_courses.Any(c =>
+            c.Code.Equals(code.Trim(), StringComparison.OrdinalIgnoreCase) &&
+            (!excludeId.HasValue || c.Id != excludeId.Value)));
+
+    public void SetOriginalRowVersion(Course course, byte[] rowVersion)
+    {
+        // No-op: fake repository không có concurrency token thật
+    }
 }

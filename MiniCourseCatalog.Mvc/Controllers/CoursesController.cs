@@ -186,19 +186,17 @@ public class CoursesController : Controller
         theme = NormalizeTheme(theme);
         ViewData["Theme"] = theme;
 
-        if (await _courseService.ExistsSameClassAsync(viewModel.Code, viewModel.Instructor, viewModel.StartDate))
+        // Custom validation nghiệp vụ: CourseCode là mã định danh duy nhất, không được trùng
+        if (await _courseService.CodeExistsAsync(viewModel.Code))
         {
             ModelState.AddModelError(
                 nameof(viewModel.Code),
-                "Lớp học này đã tồn tại với cùng mã khóa học, giảng viên và ngày khai giảng.");
+                $"Mã khóa học '{viewModel.Code}' đã tồn tại. Vui lòng dùng mã khác.");
         }
 
         if (!ModelState.IsValid)
         {
-            var categories = await _courseService.GetCourseCategoriesAsync();
-            viewModel.CategoryOptions = categories
-                .Select(c => new SelectListItem(c.Name, c.Id.ToString()))
-                .ToList();
+            await PopulateCategoryOptionsAsync(viewModel);
             return View(viewModel);
         }
 
@@ -263,6 +261,118 @@ public class CoursesController : Controller
         return View(vm);
     }
 
+    // ---------- Lab05: Edit (có RowVersion) ----------
+
+    [HttpGet]
+    public async Task<IActionResult> Edit(int id, string theme = "light")
+    {
+        theme = NormalizeTheme(theme);
+        ViewData["Theme"] = theme;
+
+        var viewModel = await _courseService.GetForEditAsync(id);
+        if (viewModel == null)
+            return NotFound($"Không thể tìm thấy khóa học với mã ID = {id}");
+
+        await PopulateCategoryOptionsAsync(viewModel);
+        return View(viewModel);
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> Edit(int id, CourseEditViewModel viewModel, string theme = "light")
+    {
+        theme = NormalizeTheme(theme);
+        ViewData["Theme"] = theme;
+
+        if (id != viewModel.Id)
+            return NotFound();
+
+        // CourseCode duy nhất — bỏ qua chính bản ghi đang sửa
+        if (await _courseService.CodeExistsAsync(viewModel.Code, viewModel.Id))
+        {
+            ModelState.AddModelError(
+                nameof(viewModel.Code),
+                $"Mã khóa học '{viewModel.Code}' đã tồn tại ở khóa học khác.");
+        }
+
+        if (!ModelState.IsValid)
+        {
+            await PopulateCategoryOptionsAsync(viewModel);
+            return View(viewModel);
+        }
+
+        var result = await _courseService.UpdateAsync(viewModel);
+        switch (result)
+        {
+            case CourseUpdateResult.Success:
+                TempData["SuccessMessage"] = $"Đã cập nhật khóa học '{viewModel.Name}'.";
+                return RedirectToAction(nameof(Index), new { theme });
+
+            case CourseUpdateResult.NotFound:
+                return NotFound();
+
+            default: // ConcurrencyConflict
+                ModelState.AddModelError(string.Empty,
+                    "Dữ liệu đã được người khác cập nhật trong lúc bạn đang sửa. Vui lòng tải lại trang và thử lại.");
+                await PopulateCategoryOptionsAsync(viewModel);
+                return View(viewModel);
+        }
+    }
+
+    // ---------- Lab05: Delete confirmation -> soft delete ----------
+
+    [HttpGet]
+    public async Task<IActionResult> Delete(int id, string theme = "light")
+    {
+        theme = NormalizeTheme(theme);
+        ViewData["Theme"] = theme;
+
+        var viewModel = await _courseService.GetForDeleteAsync(id);
+        if (viewModel == null)
+            return NotFound($"Không thể tìm thấy khóa học với mã ID = {id}");
+
+        return View(viewModel);
+    }
+
+    [HttpPost, ActionName("Delete")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> DeleteConfirmed(int id, string theme = "light")
+    {
+        theme = NormalizeTheme(theme);
+
+        var ok = await _courseService.SoftDeleteAsync(id);
+        if (!ok)
+            return NotFound();
+
+        TempData["SuccessMessage"] = "Đã chuyển khóa học vào thùng rác (xóa mềm).";
+        return RedirectToAction(nameof(Index), new { theme });
+    }
+
+    // ---------- Lab05: Trash + Restore ----------
+
+    [HttpGet]
+    public async Task<IActionResult> Trash(string theme = "light")
+    {
+        theme = NormalizeTheme(theme);
+        ViewData["Theme"] = theme;
+
+        var items = await _courseService.GetTrashAsync();
+        return View(items);
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> Restore(int id, string theme = "light")
+    {
+        theme = NormalizeTheme(theme);
+
+        var ok = await _courseService.RestoreAsync(id);
+        TempData["SuccessMessage"] = ok
+            ? "Đã khôi phục khóa học về danh sách hoạt động."
+            : "Không tìm thấy khóa học để khôi phục.";
+        return RedirectToAction(nameof(Trash), new { theme });
+    }
+
     public IActionResult Welcome() =>
         Content("Hệ thống quản lý đào tạo Mini Training Center xin chào học viên!");
 
@@ -277,6 +387,14 @@ public class CoursesController : Controller
 
     public IActionResult CategoryInfo() =>
         Content("Xem danh mục tại /DataHealth");
+
+    private async Task PopulateCategoryOptionsAsync(CourseCreateViewModel viewModel)
+    {
+        var categories = await _courseService.GetCourseCategoriesAsync();
+        viewModel.CategoryOptions = categories
+            .Select(c => new SelectListItem(c.Name, c.Id.ToString()))
+            .ToList();
+    }
 
     private static string NormalizeTheme(string theme) =>
         string.Equals(theme, "dark", StringComparison.OrdinalIgnoreCase) ? "dark" : "light";

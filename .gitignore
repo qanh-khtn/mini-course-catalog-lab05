@@ -486,6 +486,6 @@ $RECYCLE.BIN/
 # Vim temporary swap files
 *.swp
 
-add_url_overlay.py
 screenshots/
 *.lscache
+stitch_mini_training_center_manager/

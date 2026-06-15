@@ -43,8 +43,22 @@
             </div>
         </div>
 
-        <div class="mt-auto">
+        <div class="mt-auto d-flex justify-content-between align-items-center gap-2">
             <span class="course-price-tag">@Model.TuitionFeeText</span>
+
+            @* position-relative + z-index để nút nổi lên trên stretched-link của tiêu đề *@
+            <div class="d-flex gap-1 position-relative" style="z-index: 2;">
+                <a asp-controller="Courses" asp-action="Edit"
+                   asp-route-id="@Model.Id" asp-route-theme="@theme"
+                   class="btn btn-sm btn-outline-primary" title="Sửa">
+                    <i class="bi bi-pencil"></i>
+                </a>
+                <a asp-controller="Courses" asp-action="Delete"
+                   asp-route-id="@Model.Id" asp-route-theme="@theme"
+                   class="btn btn-sm btn-outline-danger" title="Xóa mềm">
+                    <i class="bi bi-trash"></i>
+                </a>
+            </div>
         </div>
     </div>
 </div>

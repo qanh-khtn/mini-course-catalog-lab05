@@ -1,3 +1,6 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using MiniCourseCatalog.Mvc.Models;
 using MiniCourseCatalog.Mvc.Options;
@@ -12,15 +15,18 @@ public class CourseService : ICourseService
     private readonly ICourseRepository _courseRepository;
     private readonly ICourseCategoryRepository _categoryRepository;
     private readonly TrainingCenterConfig _config;
+    private readonly ILogger<CourseService> _logger;
 
     public CourseService(
         ICourseRepository courseRepository,
         ICourseCategoryRepository categoryRepository,
-        IOptions<TrainingCenterConfig> config)
+        IOptions<TrainingCenterConfig> config,
+        ILogger<CourseService>? logger = null)
     {
         _courseRepository = courseRepository;
         _categoryRepository = categoryRepository;
         _config = config.Value;
+        _logger = logger ?? NullLogger<CourseService>.Instance;
     }
 
     public async Task<List<Course>> GetAllAsync() =>
@@ -89,6 +95,7 @@ public class CourseService : ICourseService
     {
         await _courseRepository.AddAsync(course);
         await _courseRepository.SaveChangesAsync();
+        _logger.LogInformation("Course created. CourseId={CourseId}, Code={Code}", course.Id, course.Code);
     }
 
     public async Task<List<Course>> SearchAsync(string keyword, string category)
@@ -135,5 +142,128 @@ public class CourseService : ICourseService
             CurrentEnrollment = c.CurrentEnrollment,
             MaxCapacity = c.MaxCapacity
         }).ToList();
+    }
+
+    // ---------- Lab05: CRUD an toàn + soft delete ----------
+
+    public Task<bool> CodeExistsAsync(string code, int? excludeId = null) =>
+        _courseRepository.CodeExistsAsync(code, excludeId);
+
+    public async Task<CourseEditViewModel?> GetForEditAsync(int id)
+    {
+        var course = await _courseRepository.GetByIdReadOnlyAsync(id);
+        if (course == null) return null;
+
+        return new CourseEditViewModel
+        {
+            Id = course.Id,
+            Code = course.Code,
+            Name = course.Name,
+            CourseCategoryId = course.CourseCategoryId,
+            Instructor = course.Instructor,
+            TuitionFee = course.TuitionFee,
+            CurrentEnrollment = course.CurrentEnrollment,
+            MaxCapacity = course.MaxCapacity,
+            StartDate = course.StartDate,
+            RowVersion = Convert.ToBase64String(course.RowVersion)
+        };
+    }
+
+    public async Task<CourseDeleteViewModel?> GetForDeleteAsync(int id)
+    {
+        var course = await _courseRepository.GetByIdReadOnlyAsync(id);
+        if (course == null) return null;
+
+        return new CourseDeleteViewModel
+        {
+            Id = course.Id,
+            Code = course.Code,
+            Name = course.Name,
+            Category = course.CourseCategory.Name,
+            Instructor = course.Instructor,
+            TuitionFee = course.TuitionFee,
+            CurrentEnrollment = course.CurrentEnrollment,
+            MaxCapacity = course.MaxCapacity,
+            StartDate = course.StartDate
+        };
+    }
+
+    public async Task<CourseUpdateResult> UpdateAsync(CourseEditViewModel viewModel)
+    {
+        // Lấy bản ghi đang hoạt động (tracked) để EF theo dõi thay đổi
+        var course = await _courseRepository.GetByIdAsync(viewModel.Id);
+        if (course == null) return CourseUpdateResult.NotFound;
+
+        course.Code = viewModel.Code.Trim();
+        course.Name = viewModel.Name.Trim();
+        course.CourseCategoryId = viewModel.CourseCategoryId;
+        course.Instructor = viewModel.Instructor.Trim();
+        course.TuitionFee = viewModel.TuitionFee;
+        course.CurrentEnrollment = viewModel.CurrentEnrollment;
+        course.MaxCapacity = viewModel.MaxCapacity;
+        course.StartDate = viewModel.StartDate;
+
+        // So phiên bản user thấy lúc mở form với phiên bản hiện tại trong DB
+        byte[] originalRowVersion;
+        try
+        {
+            originalRowVersion = Convert.FromBase64String(viewModel.RowVersion);
+        }
+        catch (FormatException)
+        {
+            return CourseUpdateResult.ConcurrencyConflict;
+        }
+        _courseRepository.SetOriginalRowVersion(course, originalRowVersion);
+
+        try
+        {
+            await _courseRepository.SaveChangesAsync();
+            _logger.LogInformation("Course updated. CourseId={CourseId}, Code={Code}", course.Id, course.Code);
+            return CourseUpdateResult.Success;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            _logger.LogWarning("Concurrency conflict updating course. CourseId={CourseId}", viewModel.Id);
+            return CourseUpdateResult.ConcurrencyConflict;
+        }
+    }
+
+    public async Task<bool> SoftDeleteAsync(int id)
+    {
+        var course = await _courseRepository.GetByIdAsync(id);
+        if (course == null) return false;
+
+        // Soft delete: đánh dấu IsDeleted thay vì xóa record. (Interceptor ApplyAuditAndSoftDelete
+        // còn là lưới an toàn chặn mọi lệnh Remove() xóa cứng vô tình.)
+        course.IsDeleted = true;
+        course.DeletedAt = DateTime.Now;
+        await _courseRepository.SaveChangesAsync();
+        _logger.LogWarning("Course soft deleted. CourseId={CourseId}, Code={Code}", course.Id, course.Code);
+        return true;
+    }
+
+    public async Task<List<CourseTrashItemViewModel>> GetTrashAsync()
+    {
+        var deleted = await _courseRepository.GetTrashReadOnlyAsync();
+        return deleted.Select(c => new CourseTrashItemViewModel
+        {
+            Id = c.Id,
+            Code = c.Code,
+            Name = c.Name,
+            Category = c.CourseCategory.Name,
+            DeletedAt = c.DeletedAt
+        }).ToList();
+    }
+
+    public async Task<bool> RestoreAsync(int id)
+    {
+        var course = await _courseRepository.GetByIdIncludingDeletedAsync(id);
+        if (course == null || !course.IsDeleted) return false;
+
+        course.IsDeleted = false;
+        course.DeletedAt = null;
+        await _courseRepository.SaveChangesAsync();
+        _logger.LogInformation("Course restored. CourseId={CourseId}, Code={Code}", course.Id, course.Code);
+        return true;
     }
 }

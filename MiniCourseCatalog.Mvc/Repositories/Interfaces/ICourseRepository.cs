@@ -12,4 +12,10 @@ public interface ICourseRepository
     Task SaveChangesAsync();
     Task<bool> ExistsSameClassAsync(string code, string instructor, DateTime startDate);
     Task<List<Course>> FilterAsync(int? categoryId, decimal? minFee, decimal? maxFee);
+
+    // --- Lab05: soft delete / trash / restore / concurrency ---
+    Task<Course?> GetByIdIncludingDeletedAsync(int id);
+    Task<List<Course>> GetTrashReadOnlyAsync();
+    Task<bool> CodeExistsAsync(string code, int? excludeId = null);
+    void SetOriginalRowVersion(Course course, byte[] rowVersion);
 }

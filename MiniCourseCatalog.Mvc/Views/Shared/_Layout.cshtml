@@ -111,6 +111,22 @@
                                         <i class="bi bi-clock-history me-2 text-primary"></i>Lịch sử đăng ký
                                     </a>
                                 </li>
+                                <li>
+                                    <a class="dropdown-item small" asp-controller="Courses" asp-action="Trash" asp-route-theme="@theme">
+                                        <i class="bi bi-trash me-2 text-primary"></i>Thùng rác
+                                    </a>
+                                </li>
+                                <li><hr class="dropdown-divider" /></li>
+                                <li>
+                                    <a class="dropdown-item small" href="/health/ready" target="_blank">
+                                        <i class="bi bi-heart-pulse me-2 text-primary"></i>Health Check
+                                    </a>
+                                </li>
+                                <li>
+                                    <a class="dropdown-item small" href="/api/courses/9999" target="_blank">
+                                        <i class="bi bi-braces me-2 text-primary"></i>API Error Demo
+                                    </a>
+                                </li>
                                 <li><hr class="dropdown-divider" /></li>
                                 <li>
                                     <a class="dropdown-item small" asp-controller="DataHealth" asp-action="Index" asp-route-theme="@theme">

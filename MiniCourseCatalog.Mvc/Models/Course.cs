@@ -2,7 +2,7 @@ using System.ComponentModel.DataAnnotations;
 
 namespace MiniCourseCatalog.Mvc.Models;
 
-public class Course
+public class Course : IAuditable, ISoftDeletable
 {
     public int Id { get; set; }
 
@@ -23,9 +23,22 @@ public class Course
     public int MaxCapacity { get; set; }
     public DateTime StartDate { get; set; }
 
-    // Concurrency token: tăng mỗi lần cập nhật sĩ số; 2 request cùng đọc một Version
-    // thì chỉ request commit trước thắng, request sau nhận DbUpdateConcurrencyException
+    // Concurrency token cũ (Lab04): tăng mỗi lần ghi danh để chống "oversell" chỗ ngồi.
+    // Vẫn giữ cho luồng Enroll. RowVersion bên dưới phục vụ Edit/AdjustCapacity của Lab05.
     public int Version { get; set; }
+
+    // --- Audit fields (Lab05) ---
+    public DateTime CreatedAt { get; set; }
+    public DateTime? UpdatedAt { get; set; }
+
+    // --- Soft delete fields (Lab05) ---
+    public bool IsDeleted { get; set; }
+    public DateTime? DeletedAt { get; set; }
+
+    // RowVersion phát hiện Last-Save-Wins ở form Edit. SQLite không tự sinh giá trị
+    // rowversion nên AppDbContext gán Guid mới mỗi lần Add/Update (xem ApplyAuditAndSoftDelete).
+    [Timestamp]
+    public byte[] RowVersion { get; set; } = Array.Empty<byte>();
 
     public int CourseCategoryId { get; set; }
     public CourseCategory CourseCategory { get; set; } = null!;

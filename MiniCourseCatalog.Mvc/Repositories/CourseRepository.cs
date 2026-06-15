@@ -67,4 +67,34 @@ public class CourseRepository : ICourseRepository
 
         return await query.OrderBy(c => c.TuitionFee).ToListAsync();
     }
+
+    // Bỏ qua global query filter để lấy cả khóa đã xóa mềm (tracked) — dùng cho Restore
+    public async Task<Course?> GetByIdIncludingDeletedAsync(int id) =>
+        await _context.Courses
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(c => c.Id == id);
+
+    // Trang Trash: chỉ lấy khóa đã xóa mềm, chỉ đọc
+    public async Task<List<Course>> GetTrashReadOnlyAsync() =>
+        await _context.Courses
+            .IgnoreQueryFilters()
+            .Where(c => c.IsDeleted)
+            .Include(c => c.CourseCategory)
+            .AsNoTracking()
+            .OrderByDescending(c => c.DeletedAt)
+            .ToListAsync();
+
+    // Kiểm tra trùng CourseCode trên TOÀN BỘ dữ liệu (kể cả đã xóa mềm) để giữ mã định danh duy nhất
+    public async Task<bool> CodeExistsAsync(string code, int? excludeId = null)
+    {
+        var normalized = code.Trim().ToLower();
+        return await _context.Courses
+            .IgnoreQueryFilters()
+            .AnyAsync(c => c.Code.ToLower() == normalized && (!excludeId.HasValue || c.Id != excludeId.Value));
+    }
+
+    // Gán OriginalValue của RowVersion = phiên bản user thấy lúc mở form,
+    // để EF sinh WHERE RowVersion = @original và phát hiện Last-Save-Wins
+    public void SetOriginalRowVersion(Course course, byte[] rowVersion) =>
+        _context.Entry(course).Property(nameof(Course.RowVersion)).OriginalValue = rowVersion;
 }
